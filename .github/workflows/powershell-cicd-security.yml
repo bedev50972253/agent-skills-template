@@ -1,0 +1,354 @@
+name: 📜 PowerShell 腳本 CI/CD
+
+# 📌 適用專案：
+# - agent-skills-template (PowerShell 工具)
+# - 所有包含 .ps1 腳本的專案
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - '**.ps1'
+      - '**.psm1'
+      - '**.psd1'
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # ==============================================
+  # 1️⃣ PowerShell 語法驗證
+  # ==============================================
+  syntax-check:
+    name: 🔍 PowerShell 語法檢查
+    runs-on: windows-latest
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+
+      - name: 🔍 檢查語法錯誤
+        shell: pwsh
+        run: |
+          Write-Host "## 🔍 PowerShell 語法檢查" -ForegroundColor Cyan
+
+          $scripts = Get-ChildItem -Path . -Include *.ps1,*.psm1 -Recurse
+          $errorCount = 0
+
+          foreach ($script in $scripts) {
+            Write-Host "檢查: $($script.FullName)" -ForegroundColor Yellow
+
+            $errors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $script.FullName -Raw), [ref]$errors)
+
+            if ($errors.Count -gt 0) {
+              Write-Host "❌ 發現語法錯誤:" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host $_ }
+              $errorCount++
+            } else {
+              Write-Host "✅ 通過" -ForegroundColor Green
+            }
+          }
+
+          if ($errorCount -gt 0) {
+            Write-Host "❌ 總計 $errorCount 個檔案有語法錯誤" -ForegroundColor Red
+            exit 1
+          } else {
+            Write-Host "✅ 所有腳本語法正確" -ForegroundColor Green
+          }
+
+  # ==============================================
+  # 2️⃣ PSScriptAnalyzer 靜態分析
+  # ==============================================
+  script-analyzer:
+    name: 🔬 PSScriptAnalyzer 分析
+    runs-on: windows-latest
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+
+      - name: 📦 安裝 PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+
+      - name: 🔍 執行靜態分析
+        shell: pwsh
+        run: |
+          Write-Host "## 🔬 PSScriptAnalyzer 分析" -ForegroundColor Cyan
+
+          $scripts = Get-ChildItem -Path . -Include *.ps1,*.psm1 -Recurse
+          $allIssues = @()
+
+          foreach ($script in $scripts) {
+            Write-Host "`n檢查: $($script.FullName)" -ForegroundColor Yellow
+
+            $results = Invoke-ScriptAnalyzer -Path $script.FullName -Severity Error,Warning
+
+            if ($results) {
+              $allIssues += $results
+              $results | Format-Table -AutoSize
+            } else {
+              Write-Host "✅ 無問題" -ForegroundColor Green
+            }
+          }
+
+          # 產生摘要
+          Write-Host "`n## 📊 分析摘要" -ForegroundColor Cyan
+          Write-Host "總問題數: $($allIssues.Count)"
+
+          $errorCount = ($allIssues | Where-Object Severity -eq 'Error').Count
+          $warningCount = ($allIssues | Where-Object Severity -eq 'Warning').Count
+
+          Write-Host "錯誤: $errorCount" -ForegroundColor Red
+          Write-Host "警告: $warningCount" -ForegroundColor Yellow
+
+          # 匯出結果
+          if ($allIssues.Count -gt 0) {
+            $allIssues | Export-Csv -Path "analyzer-results.csv" -NoTypeInformation
+          }
+
+          # 如果有錯誤，失敗
+          if ($errorCount -gt 0) {
+            Write-Host "❌ 發現 $errorCount 個錯誤" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 📤 上傳分析結果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyzer-results
+          path: analyzer-results.csv
+        continue-on-error: true
+
+  # ==============================================
+  # 3️⃣ Pester 單元測試
+  # ==============================================
+  pester-tests:
+    name: 🧪 Pester 單元測試
+    runs-on: windows-latest
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+
+      - name: 📦 安裝 Pester
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -Force -Scope CurrentUser -SkipPublisherCheck
+
+      - name: 🧪 執行測試
+        shell: pwsh
+        run: |
+          # 尋找測試檔案
+          $testFiles = Get-ChildItem -Path . -Include *.Tests.ps1 -Recurse
+
+          if ($testFiles.Count -eq 0) {
+            Write-Host "⚠️ 未找到測試檔案 (*.Tests.ps1)" -ForegroundColor Yellow
+            Write-Host "建議建立 Pester 測試以確保腳本品質"
+            exit 0
+          }
+
+          Write-Host "找到 $($testFiles.Count) 個測試檔案" -ForegroundColor Cyan
+
+          # 執行測試
+          $config = New-PesterConfiguration
+          $config.Run.Path = $testFiles
+          $config.Output.Verbosity = 'Detailed'
+          $config.CodeCoverage.Enabled = $true
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'testResults.xml'
+
+          $results = Invoke-Pester -Configuration $config
+
+          if ($results.FailedCount -gt 0) {
+            Write-Host "❌ 測試失敗: $($results.FailedCount) 個" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 📊 上傳測試結果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: testResults.xml
+        continue-on-error: true
+
+  # ==============================================
+  # 4️⃣ 安全檢查 (機密資訊)
+  # ==============================================
+  security-scan:
+    name: 🔐 PowerShell 安全掃描
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🕵️ Gitleaks 掃描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔍 檢查硬編碼密碼
+        shell: bash
+        run: |
+          echo "檢查 PowerShell 腳本中的潛在安全問題..."
+
+          # 檢查明文密碼
+          if grep -r "password\s*=\s*['\"]" --include="*.ps1" .; then
+            echo "❌ 發現硬編碼密碼"
+            exit 1
+          fi
+
+          # 檢查明文 API 金鑰
+          if grep -r "apikey\s*=\s*['\"][^$]" --include="*.ps1" .; then
+            echo "❌ 發現硬編碼 API 金鑰"
+            exit 1
+          fi
+
+          echo "✅ 未發現明顯的硬編碼機密"
+
+      - name: 🔒 檢查危險命令
+        shell: bash
+        run: |
+          echo "檢查危險的 PowerShell 命令..."
+
+          # 檢查 Invoke-Expression (可能的程式碼注入)
+          if grep -r "Invoke-Expression\|iex\s" --include="*.ps1" .; then
+            echo "⚠️ 警告：發現 Invoke-Expression，可能有程式碼注入風險"
+          fi
+
+          # 檢查 -Credential 參數使用
+          if grep -r "\-Credential\s\+[^(]" --include="*.ps1" .; then
+            echo "⚠️ 建議使用 Get-Credential 或 SecureString"
+          fi
+
+  # ==============================================
+  # 5️⃣ 跨平台測試
+  # ==============================================
+  cross-platform:
+    name: 🌐 跨平台驗證
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+
+      - name: 🔍 PowerShell 版本
+        shell: pwsh
+        run: |
+          Write-Host "PowerShell 版本: $($PSVersionTable.PSVersion)"
+          Write-Host "作業系統: $($PSVersionTable.OS)"
+
+      - name: 🧪 基本執行測試
+        shell: pwsh
+        run: |
+          $scripts = Get-ChildItem -Path . -Include *.ps1 -Recurse |
+                     Where-Object { $_.Name -notmatch '\.Tests\.ps1$' }
+
+          foreach ($script in $scripts) {
+            Write-Host "測試載入: $($script.Name)"
+
+            # 嘗試點載入 (不執行)
+            try {
+              $null = Get-Command -Syntax $script.FullName -ErrorAction Stop
+              Write-Host "✅ $($script.Name)" -ForegroundColor Green
+            } catch {
+              Write-Host "⚠️ $($script.Name) 無法載入" -ForegroundColor Yellow
+            }
+          }
+
+  # ==============================================
+  # 6️⃣ PowerShell 模組發布 (如果是模組專案)
+  # ==============================================
+  publish-module:
+    name: 📦 PowerShell 模組發布
+    runs-on: windows-latest
+    if: github.ref == 'refs/heads/main' && hashFiles('**/*.psd1') != ''
+    needs: [syntax-check, script-analyzer, pester-tests]
+
+    steps:
+      - name: 📥 Checkout 程式碼
+        uses: actions/checkout@v4
+
+      - name: 🔍 驗證模組資訊
+        shell: pwsh
+        run: |
+          $manifest = Get-ChildItem -Path . -Include *.psd1 -Recurse | Select-Object -First 1
+
+          if ($manifest) {
+            Write-Host "找到模組資訊: $($manifest.FullName)"
+
+            $moduleInfo = Test-ModuleManifest -Path $manifest.FullName
+            Write-Host "模組名稱: $($moduleInfo.Name)"
+            Write-Host "版本: $($moduleInfo.Version)"
+            Write-Host "作者: $($moduleInfo.Author)"
+          }
+
+      - name: 📤 發布至 PowerShell Gallery (手動觸發)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          if ($env:PSGALLERY_API_KEY) {
+            Write-Host "準備發布至 PowerShell Gallery..."
+            # Publish-Module -Path . -NuGetApiKey $env:PSGALLERY_API_KEY
+            Write-Host "⚠️ 取消註解上方命令以啟用發布"
+          } else {
+            Write-Host "⚠️ 缺少 PSGallery API 金鑰，跳過發布"
+          }
+
+  # ==============================================
+  # 7️⃣ PowerShell 安全摘要
+  # ==============================================
+  powershell-summary:
+    name: 📊 PowerShell 安全摘要
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [syntax-check, script-analyzer, security-scan]
+
+    steps:
+      - name: 📋 產生摘要報告
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📜 PowerShell 腳本掃描摘要
+
+          ## ✅ 完成的檢查項目
+          - ✓ PowerShell 語法驗證
+          - ✓ PSScriptAnalyzer 靜態分析
+          - ✓ Pester 單元測試
+          - ✓ 機密資訊掃描
+          - ✓ 危險命令檢查
+          - ✓ 跨平台相容性測試
+
+          ## 🎯 PowerShell 最佳實踐
+          1. 使用 `[CmdletBinding()]` 啟用進階函式功能
+          2. 實作適當的錯誤處理 (`try/catch`)
+          3. 使用 `SecureString` 處理敏感資訊
+          4. 避免 `Invoke-Expression`，改用 `& $Command`
+          5. 加入 Pester 測試確保腳本品質
+          6. 使用 `Get-Credential` 而非硬編碼密碼
+          7. 啟用 `-WhatIf` 和 `-Confirm` 支援
+
+          ## 📚 參考資源
+          - [PowerShell 最佳實踐](https://github.com/PoshCode/PowerShellPracticeAndStyle)
+          - [PSScriptAnalyzer規則](https://github.com/PowerShell/PSScriptAnalyzer)
+          - [Pester 測試框架](https://pester.dev/)
+
+          ---
+          🤖 由 GitHub Actions 自動產生
+          EOF

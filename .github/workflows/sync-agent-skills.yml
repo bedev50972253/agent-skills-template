@@ -1,0 +1,120 @@
+name: 同步 Agent Skills
+
+on:
+  schedule:
+    # 每週日 00:00 UTC 自動檢查模板更新
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # 允許手動觸發
+  
+env:
+  TEMPLATE_REPO: bedev50972253/agent-skills-template
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    name: 同步 Agent Skills 模板
+    
+    steps:
+      - name: Checkout 當前倉庫
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      
+      - name: 設定 Git 使用者
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: 下載最新模板
+        run: |
+          echo "📥 下載模板倉庫: $TEMPLATE_REPO"
+          git clone --depth 1 https://github.com/$TEMPLATE_REPO /tmp/agent-skills-template
+      
+      - name: 檢查檔案變更
+        id: check-changes
+        run: |
+          # 比較 AGENTS.md
+          if ! diff -q AGENTS.md /tmp/agent-skills-template/AGENTS.md > /dev/null 2>&1; then
+            echo "agents_md_changed=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # 比較 .github/agents/
+          if ! diff -qr .github/agents /tmp/agent-skills-template/.github/agents > /dev/null 2>&1; then
+            echo "agents_dir_changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 更新 Agent 定義檔案
+        if: steps.check-changes.outputs.agents_md_changed == 'true' || steps.check-changes.outputs.agents_dir_changed == 'true'
+        run: |
+          echo "📝 更新 Agent 定義檔案..."
+          
+          # 備份現有自訂技能
+          if [ -d "skills/custom" ]; then
+            cp -r skills/custom /tmp/backup-custom-skills
+          fi
+          
+          # 更新核心檔案（不覆蓋自訂內容）
+          if [ "${{ steps.check-changes.outputs.agents_md_changed }}" == "true" ]; then
+            cp /tmp/agent-skills-template/AGENTS.md AGENTS.md
+            echo "✅ 已更新 AGENTS.md"
+          fi
+          
+          # 更新 Agent 定義
+          if [ "${{ steps.check-changes.outputs.agents_dir_changed }}" == "true" ]; then
+            # 僅更新標準 Agent,保留自訂 Agent
+            for agent in planner backend frontend database infra security; do
+              if [ -f "/tmp/agent-skills-template/.github/agents/$agent.agent.md" ]; then
+                cp "/tmp/agent-skills-template/.github/agents/$agent.agent.md" ".github/agents/$agent.agent.md"
+                echo "✅ 已更新 $agent.agent.md"
+              fi
+            done
+          fi
+          
+          # 還原自訂技能
+          if [ -d "/tmp/backup-custom-skills" ]; then
+            cp -r /tmp/backup-custom-skills skills/custom
+          fi
+      
+      - name: 建立 Pull Request
+        if: steps.check-changes.outputs.agents_md_changed == 'true' || steps.check-changes.outputs.agents_dir_changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: 同步 Agent Skills 模板更新"
+          title: "🤖 自動同步: Agent Skills 模板更新"
+          body: |
+            ## 📋 變更摘要
+            
+            此 PR 由 GitHub Actions 自動建立,用於同步最新的 Agent Skills 模板結構。
+            
+            **變更來源**: [${{ env.TEMPLATE_REPO }}](https://github.com/${{ env.TEMPLATE_REPO }})
+            
+            ### 變更內容
+            
+            - [ ] AGENTS.md 更新
+            - [ ] Agent 定義檔案更新 (.github/agents/)
+            - [ ] 自訂技能已保留
+            
+            ### 檢查清單
+            
+            - [ ] 檢視變更內容
+            - [ ] 確認自訂技能未被覆蓋
+            - [ ] 測試 Agent 功能正常
+            - [ ] 合併此 PR
+            
+            ---
+            
+            🤖 **自動化工作流程**: `.github/workflows/sync-agent-skills.yml`
+          branch: sync-agent-skills
+          delete-branch: true
+          labels: |
+            automation
+            agent-skills
+            dependencies
+      
+      - name: 完成
+        run: |
+          echo "✅ Agent Skills 同步完成!"
+          echo "📝 如有變更,已建立 Pull Request 供審查"

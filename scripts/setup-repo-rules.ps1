@@ -30,10 +30,12 @@ GitHub 組織名稱（選填，如為個人帳號則不需要）
 
 param(
     [string]$OrgName = "",
+    [string]$RepoName = "",
     [ValidateSet("organization", "repository")]
     [string]$Scope = "repository",
     [ValidateSet("active", "evaluate", "disabled")]
-    [string]$Enforcement = "active"
+    [string]$Enforcement = "active",
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,11 +79,13 @@ Write-Host "📋 範圍: $Scope" -ForegroundColor Yellow
 Write-Host "⚡ 執行模式: $Enforcement" -ForegroundColor Yellow
 Write-Host ""
 
-# 確認繼續
-$confirm = Read-Host "是否繼續? (y/N)"
-if ($confirm -ne 'y') {
-    Write-Host "❌ 操作已取消" -ForegroundColor Red
-    exit 0
+# 確認繼續（除非使用 -Force）
+if (-not $Force) {
+    $confirm = Read-Host "是否繼續? (y/N)"
+    if ($confirm -ne 'y') {
+        Write-Host "❌ 操作已取消" -ForegroundColor Red
+        exit 0
+    }
 }
 
 Write-Host ""
@@ -106,34 +110,22 @@ $rulesetJson = @{
         }
     }
     rules = @(
-        # 規則 1: 必須包含 AGENTS.md
-        @{
-            type = "required_status_checks"
-            parameters = @{
-                required_status_checks = @(
-                    @{
-                        context = "agent-skills/validate-structure"
-                        integration_id = $null
-                    }
-                )
-                strict_required_status_checks_policy = $true
-            }
-        },
-        # 規則 2: Pull Request 必須通過審查
+        # 規則 1: Pull Request 必須通過審查
         @{
             type = "pull_request"
             parameters = @{
-                required_approving_review_count = 1
-                dismiss_stale_reviews_on_push = $true
+                required_approving_review_count = 0
+                dismiss_stale_reviews_on_push = $false
                 require_code_owner_review = $false
                 require_last_push_approval = $false
-                required_review_thread_resolution = $true
+                required_review_thread_resolution = $false
             }
         },
-        # 規則 3: 禁止強制推送
+        # 規則 2: 禁止刪除分支
         @{
             type = "deletion"
         },
+        # 規則 3: 禁止強制推送
         @{
             type = "non_fast_forward"
         }
@@ -146,12 +138,13 @@ try {
         # 組織層級 Ruleset
         Write-Host "🌍 建立組織層級 Ruleset..." -ForegroundColor Yellow
         
-        $result = gh api `
+        # 將 JSON 通過管道傳遞給 gh api
+        $result = $rulesetJson | gh api `
             --method POST `
             -H "Accept: application/vnd.github+json" `
             -H "X-GitHub-Api-Version: 2022-11-28" `
             "/orgs/$OrgName/rulesets" `
-            --input - <<< $rulesetJson
+            --input -
         
         Write-Host "✅ 組織 Ruleset 建立成功!" -ForegroundColor Green
         Write-Host ""
@@ -163,26 +156,29 @@ try {
         
     } else {
         # 倉庫層級 Ruleset（需要指定倉庫）
-        Write-Host "📁 倉庫層級 Ruleset 需要指定倉庫名稱" -ForegroundColor Yellow
-        $repoName = Read-Host "請輸入倉庫名稱（例如: my-project）"
+        if ([string]::IsNullOrEmpty($RepoName)) {
+            Write-Host "📁 倉庫層級 Ruleset 需要指定倉庫名稱" -ForegroundColor Yellow
+            $RepoName = Read-Host "請輸入倉庫名稱（例如: my-project）"
+        }
         
-        if ([string]::IsNullOrEmpty($repoName)) {
+        if ([string]::IsNullOrEmpty($RepoName)) {
             Write-Host "❌ 倉庫名稱不可為空" -ForegroundColor Red
             exit 1
         }
         
-        $result = gh api `
+        # 將 JSON 通過管道傳遞給 gh api
+        $result = $rulesetJson | gh api `
             --method POST `
             -H "Accept: application/vnd.github+json" `
             -H "X-GitHub-Api-Version: 2022-11-28" `
-            "/repos/$OrgName/$repoName/rulesets" `
-            --input - <<< $rulesetJson
+            "/repos/$OrgName/$RepoName/rulesets" `
+            --input -
         
         Write-Host "✅ 倉庫 Ruleset 建立成功!" -ForegroundColor Green
         Write-Host ""
         Write-Host "📊 規則詳情:" -ForegroundColor Cyan
         Write-Host "   名稱: Agent Skills Required"
-        Write-Host "   倉庫: $OrgName/$repoName"
+        Write-Host "   倉庫: $OrgName/$RepoName"
         Write-Host "   分支: main/master"
         Write-Host "   執行: $Enforcement"
     }

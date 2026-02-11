@@ -1,0 +1,200 @@
+name: Validate Agent Skills Structure
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: agent-skills/validate-structure
+    
+    steps:
+      - name: Checkout 程式碼
+        uses: actions/checkout@v4
+      
+      - name: 📋 檢查 AGENTS.md
+        run: |
+          echo "檢查 AGENTS.md 檔案..."
+          if [ ! -f "AGENTS.md" ]; then
+            echo "❌ 缺少 AGENTS.md 檔案"
+            echo "請從模板複製: https://github.com/bedev50972253/agent-skills-template/blob/master/AGENTS.md"
+            exit 1
+          fi
+          
+          # 檢查檔案大小（至少 500 bytes）
+          file_size=$(stat -f%z "AGENTS.md" 2>/dev/null || stat -c%s "AGENTS.md")
+          if [ $file_size -lt 500 ]; then
+            echo "⚠️  AGENTS.md 內容似乎不完整（小於 500 bytes）"
+            exit 1
+          fi
+          
+          echo "✅ AGENTS.md 存在且格式正確"
+      
+      - name: 🤖 檢查 .github/agents/ 目錄
+        run: |
+          echo "檢查 Agent 定義檔案..."
+          if [ ! -d ".github/agents" ]; then
+            echo "❌ 缺少 .github/agents/ 目錄"
+            echo "請建立至少一個 .agent.md 檔案"
+            exit 1
+          fi
+          
+          # 計算 agent 檔案數量
+          agent_count=$(find .github/agents -name "*.agent.md" | wc -l)
+          if [ $agent_count -eq 0 ]; then
+            echo "❌ .github/agents/ 目錄中沒有找到 .agent.md 檔案"
+            echo "請至少建立一個 agent 定義檔案"
+            exit 1
+          fi
+          
+          echo "✅ 找到 $agent_count 個 Agent 定義"
+          
+          # 列出所有 agents
+          echo "📝 Agent 清單:"
+          find .github/agents -name "*.agent.md" -exec basename {} \;
+      
+      - name: 🛠️ 檢查 skills/ 目錄
+        run: |
+          echo "檢查 Skills 目錄..."
+          if [ ! -d "skills" ]; then
+            echo "❌ 缺少 skills/ 目錄"
+            echo "請建立至少一個技能資料夾並包含 SKILL.md"
+            exit 1
+          fi
+          
+          # 計算技能數量
+          skill_count=$(find skills -name "SKILL.md" | wc -l)
+          if [ $skill_count -eq 0 ]; then
+            echo "❌ skills/ 目錄中沒有找到 SKILL.md 檔案"
+            echo "請至少建立一個技能（參考 template-skill）"
+            exit 1
+          fi
+          
+          echo "✅ 找到 $skill_count 個技能"
+          
+          # 列出所有技能
+          echo "📝 Skills 清單:"
+          find skills -name "SKILL.md" -exec dirname {} \; | xargs -I {} basename {}
+      
+      - name: 📦 安裝 YAML 驗證工具
+        run: |
+          # 安裝 yq (YAML 處理工具)
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      
+      - name: ✅ 驗證 SKILL.md YAML Frontmatter
+        run: |
+          echo "驗證所有 SKILL.md 的 YAML frontmatter..."
+          
+          error_count=0
+          
+          for skill_file in $(find skills -name "SKILL.md"); do
+            echo ""
+            echo "🔍 檢查: $skill_file"
+            
+            # 檢查是否有 YAML frontmatter
+            if ! grep -q "^---$" "$skill_file"; then
+              echo "❌ 缺少 YAML frontmatter (沒有找到 --- 分隔符)"
+              error_count=$((error_count + 1))
+              continue
+            fi
+            
+            # 提取 YAML frontmatter（第一個 --- 到第二個 ---）
+            yaml_content=$(sed -n '/^---$/,/^---$/p' "$skill_file" | sed '1d;$d')
+            
+            if [ -z "$yaml_content" ]; then
+              echo "❌ YAML frontmatter 為空"
+              error_count=$((error_count + 1))
+              continue
+            fi
+            
+            # 驗證必要欄位
+            required_fields=("name" "description" "version" "category")
+            
+            for field in "${required_fields[@]}"; do
+              if ! echo "$yaml_content" | yq eval ".$field" - | grep -v "null" > /dev/null; then
+                echo "❌ 缺少必要欄位: $field"
+                error_count=$((error_count + 1))
+              fi
+            done
+            
+            # 提取並顯示 skill 資訊
+            skill_name=$(echo "$yaml_content" | yq eval '.name' -)
+            skill_version=$(echo "$yaml_content" | yq eval '.version' -)
+            skill_category=$(echo "$yaml_content" | yq eval '.category' -)
+            
+            echo "✅ $skill_name (v$skill_version) - $skill_category"
+          done
+          
+          if [ $error_count -gt 0 ]; then
+            echo ""
+            echo "❌ 發現 $error_count 個驗證錯誤"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ 所有 SKILL.md YAML 格式正確"
+      
+      - name: 📁 檢查目錄結構完整性
+        run: |
+          echo "檢查完整目錄結構..."
+          
+          # 建議的目錄結構
+          suggested_dirs=(
+            ".github/agents"
+            ".github/prompts"
+            ".github/instructions"
+            "skills"
+          )
+          
+          missing_count=0
+          
+          for dir in "${suggested_dirs[@]}"; do
+            if [ ! -d "$dir" ]; then
+              echo "⚠️  建議建立目錄: $dir"
+              missing_count=$((missing_count + 1))
+            else
+              echo "✅ $dir"
+            fi
+          done
+          
+          if [ $missing_count -gt 0 ]; then
+            echo ""
+            echo "⚠️  有 $missing_count 個建議目錄缺失（非必要，但建議建立）"
+          fi
+      
+      - name: 📊 生成驗證報告
+        if: always()
+        run: |
+          echo ""
+          echo "======================================"
+          echo "📊 Agent Skills 結構驗證報告"
+          echo "======================================"
+          echo ""
+          echo "✅ 核心檔案:"
+          [ -f "AGENTS.md" ] && echo "  ✓ AGENTS.md" || echo "  ✗ AGENTS.md"
+          [ -f "README.md" ] && echo "  ✓ README.md" || echo "  ○ README.md (選用)"
+          echo ""
+          echo "✅ Agent 定義:"
+          agent_count=$(find .github/agents -name "*.agent.md" 2>/dev/null | wc -l)
+          echo "  找到 $agent_count 個 Agent"
+          echo ""
+          echo "✅ Skills:"
+          skill_count=$(find skills -name "SKILL.md" 2>/dev/null | wc -l)
+          echo "  找到 $skill_count 個技能"
+          echo ""
+          echo "======================================"
+      
+      - name: 🎉 驗證完成
+        run: |
+          echo ""
+          echo "🎉 Agent Skills 結構驗證通過！"
+          echo ""
+          echo "您的專案符合 agentskills.io 開放標準"
+          echo "可與 GitHub Copilot、Claude Desktop、Azure AI Foundry 整合使用"
+          echo ""
